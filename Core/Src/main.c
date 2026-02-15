@@ -48,6 +48,8 @@
 /* USER CODE BEGIN PV */
 float Accel_X_OFF = 0, Accel_Y_OFF = 0, Accel_Z_OFF = 0; // will take avg of sensor reading while still to calibrate.
 float velocity_x = 0;
+float distance_x = 0;
+float peak_velocity = 0;
 uint32_t last_time = 0;
 
 /* USER CODE END PV */
@@ -124,7 +126,7 @@ int main(void)
 
   for(int i = 0; i < 100; i++) {
       // Read your RAW data here (same logic as your loop)
-	  // ALL CAPS COMMENT WITH FIX: ADDED ACTUAL I2C READ AND BIT SHIFTING TO CALIBRATION LOOP TO POPULATE temp VARIABLES
+	  // FIXED: ADDED ACTUAL I2C READ AND BIT SHIFTING TO CALIBRATION LOOP TO POPULATE temp VARIABLES
 	  if(HAL_I2C_Mem_Read(&hi2c1, 0xD2, 0x3B, 1, Cal_Data, 6, 1000) == HAL_OK) {
 		  raw_x = (int16_t)(Cal_Data[0] << 8 | Cal_Data[1]);
 		  raw_y = (int16_t)(Cal_Data[2] << 8 | Cal_Data[3]);
@@ -143,7 +145,8 @@ int main(void)
   Accel_Z_OFF = (tempZ / 100.0) - 1.0; // We subtract 1.0 because Z should see gravity
   printf("Calibration Done!\r\n");
 
-  HAL_TIM_Base_Start(&hi2c1); // start timer next!
+  // FIXED: CHANGED hi2c1 TO htim2 TO ACTUALLY START THE TIMER
+  HAL_TIM_Base_Start(&htim2); // start timer next!
 
   /* USER CODE END 2 */
 
@@ -172,18 +175,34 @@ int main(void)
 	  float dt = (current_time - last_time) / 1000000.0f; // convert microseconds to seconds
 	  last_time = current_time; //update
 
-	  if (ax > 0.05 || ax < -0.05) {
+	  // FIXED: SLIGHTLY INCREASED DEADZONE TO 0.1 TO PREVENT DRIFT DURING DOUBLE INTEGRATION
+	  if (ax > 0.1 || ax < -0.1) {
 		  velocity_x += (ax * 9.81f) * dt;
+		  // FIXED: INTEGRATED VELOCITY TO GET DISTANCE
+		  distance_x += velocity_x * dt;
+
+		  // FIXED: TRACK PEAK VELOCITY (ABSOLUTE VALUE TO ACCOUNT FOR BACKWARD MOVES)
+		  float current_v_abs = (velocity_x < 0) ? -velocity_x : velocity_x;
+		  if (current_v_abs > peak_velocity) peak_velocity = current_v_abs;
+
+		  printf("V: %.2f | D: %.2f\r\n", velocity_x, distance_x);
 	  }
 
 	  else {
-		  velocity_x = 0; // if it's not moving much, assume it's stopped
+		  // FIXED: ADDED LOGIC TO PRINT SUMMARY AND RESET ONCE MOVEMENT STOPS
+		  if (velocity_x != 0) {
+			  printf("---- MOVE COMPLETE ----\r\n");
+			  printf("Peak: %.2f m/s | Total Dist: %.2f m\r\n", peak_velocity, distance_x);
+			  printf("-----------------------\r\n");
+
+			  velocity_x = 0;
+			  distance_x = 0;
+			  peak_velocity = 0;
+		  }
 	  }
 
-	  printf("V: %.2f m/s\r\n", velocity_x);
-
 	  // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); i just used this to check that microcontroller works (this blinks green)
-	  HAL_Delay(10); // 10hz refresh rate for now
+	  HAL_Delay(10); // 100hz refresh rate for now
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -258,7 +277,7 @@ void Error_Handler(void)
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
+  * where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None
